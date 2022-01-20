@@ -127,7 +127,7 @@ def _make_mapper(driver_addresses, settings, use_gloo, is_elastic):
     return _mapper
 
 
-def _make_spark_thread(spark_context, spark_job_group, driver, result_queue,
+def _make_spark_thread(spark_context, resource_profile, spark_job_group, driver, result_queue,
                        settings, use_gloo, is_elastic):
     """Creates `settings.num_proc` Spark tasks in a parallel thread."""
     def run_spark():
@@ -135,6 +135,10 @@ def _make_spark_thread(spark_context, spark_job_group, driver, result_queue,
         try:
             spark_context.setJobGroup(spark_job_group, "Horovod Spark Run", interruptOnCancel=True)
             procs = spark_context.range(0, numSlices=settings.max_np if settings.elastic else settings.num_proc)
+            # If resource_profile is provided by user, it will be used for new executor.
+            # Else, the previous resource configuration will be reused.
+            if resource_profile:
+                procs.withResources(resource_profile)
             # We assume that folks caring about security will enable Spark RPC encryption,
             # thus ensuring that key that is passed here remains secret.
             mapper = _make_mapper(driver.addresses(), settings, use_gloo, is_elastic)
@@ -194,7 +198,7 @@ def _get_indices_in_rank_order(driver):
     return [index for _, index in sorted(ranks_to_indices.items(), key=lambda item: item[0])]
 
 
-def run(fn, args=(), kwargs={}, num_proc=None, start_timeout=None,
+def run(fn, args=(), kwargs={}, num_proc=None, resource_profile=None, start_timeout=None,
         use_mpi=None, use_gloo=None, extra_mpi_args=None,
         env=None, stdout=None, stderr=None, verbose=1, nics=None,
         prefix_output_with_timestamp=False, executable=None):
@@ -206,6 +210,8 @@ def run(fn, args=(), kwargs={}, num_proc=None, start_timeout=None,
         args: Arguments to pass to `fn`.
         kwargs: Keyword arguments to pass to `fn`.
         num_proc: Number of Horovod processes.  Defaults to `spark.default.parallelism`.
+        resource_profile: Resource profile for stage-level scheduling. More information: 
+                          https://spark.apache.org/docs/3.2.0/running-on-yarn.html#stage-level-scheduling-overview
         start_timeout: Timeout for Spark tasks to spawn, register and start running the code, in seconds.
                        If not set, falls back to `HOROVOD_SPARK_START_TIMEOUT` environment variable value.
                        If it is not set as well, defaults to 600 seconds.
@@ -266,7 +272,7 @@ def run(fn, args=(), kwargs={}, num_proc=None, start_timeout=None,
                                                fn, args, kwargs,
                                                settings.key, settings.nics)
     gloo_is_used = is_gloo_used(use_gloo=use_gloo, use_mpi=use_mpi, use_jsrun=False)
-    spark_thread = _make_spark_thread(spark_context, spark_job_group, driver,
+    spark_thread = _make_spark_thread(spark_context, resource_profile, spark_job_group, driver,
                                       result_queue, settings,
                                       use_gloo=gloo_is_used, is_elastic=False)
     try:
